@@ -5,3 +5,8 @@ output/*.png
 output/
 *.pyc
 __pycache__/*
+calibration-frames-undistorted/
+calibration.json
+frame_scores.json
+selected_frames.json
+undistorted-output.mp4

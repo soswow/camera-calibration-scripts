@@ -14,7 +14,7 @@ python -m pip install -r requirements.txt
 
 ## Scripts
 
-### ChArUco board generator
+### ChArUco board generator (`scripts/generate_charuco.py`)
 
 Generate print-ready ChArUco boards as single-page PDFs or tiled multi-page PDFs with
 crop marks, tile labels, and a minimap for assembly.
@@ -107,3 +107,66 @@ Tiling notes:
 - Print a reference ruler and verify scale
 - After printing, measure square size; target error < 0.5 mm
 - Mount to a flat surface; do not laminate
+
+### Frame scoring (`scripts/score_charuco_frames.py`)
+
+Scores each frame by sharpness and board detection quality, and writes a sorted JSON list.
+
+```bash
+python scripts/score_charuco_frames.py \
+  --input /path/to/frames \
+  --output frame_scores.json
+```
+
+### Diverse selection (`scripts/select_diverse_frames.py`)
+
+Selects a diverse subset of frames using proxy pose metrics (center, size, aspect).
+
+```bash
+python scripts/select_diverse_frames.py \
+  --input frame_scores.json \
+  --output selected_frames.json \
+  --select 50 \
+  --top-k 300
+```
+
+### Calibration (`scripts/calibrate_charuco.py`)
+
+Calibrates camera intrinsics from the selected frames and writes `calibration.json`.
+
+```bash
+python scripts/calibrate_charuco.py \
+  --input selected_frames.json \
+  --output calibration.json
+```
+
+Optional pruning by per-view error threshold:
+
+```bash
+python scripts/calibrate_charuco.py \
+  --input selected_frames.json \
+  --output calibration.json \
+  --prune-threshold 1.5
+```
+
+### Undistort preview (`scripts/undistort_images.py`)
+
+Batch-undistorts images using `calibration.json` for visual inspection.
+
+```bash
+python scripts/undistort_images.py \
+  --calibration calibration.json \
+  --input /path/to/frames \
+  --output /path/to/frames-undistorted
+```
+
+### Recommended pipeline
+
+```bash
+python scripts/score_charuco_frames.py --input /path/to/frames --output frame_scores.json
+python scripts/select_diverse_frames.py --input frame_scores.json --output selected_frames.json
+python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json
+python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json --prune-threshold 1.5
+python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json
+python scripts/undistort_images.py --calibration calibration.json --input /path/to/frames --output /path/to/frames-undistorted
+```
