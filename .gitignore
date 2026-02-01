@@ -1,6 +1,6 @@
 .DS_Store
 /refs
-*.png
+output/*.png
 *.pdf
 output/
 *.pyc

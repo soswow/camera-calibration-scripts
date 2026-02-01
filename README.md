@@ -1,6 +1,6 @@
 # Camera Calibration Helpers
 
-Small set of scripts to support camera calibration tasks. First script: ChArUco board generator.
+Small set of scripts to support camera calibration tasks. Each script has its own section below.
 
 ## Setup
 
@@ -12,7 +12,21 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-## Generate a ChArUco board
+## Scripts
+
+### ChArUco board generator
+
+Generate print-ready ChArUco boards as single-page PDFs or tiled multi-page PDFs with
+crop marks, tile labels, and a minimap for assembly.
+
+<table>
+  <tr>
+    <td><img src="docs/images/charuco_pdf_result.jpg" alt="ChArUco PDF output" width="360"></td>
+    <td><img src="docs/images/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles_minimap.png" alt="Tiled output minimap" width="360"></td>
+  </tr>
+</table>
+
+### Generate a ChArUco board
 
 Defaults:
 - 10 x 7 squares
@@ -41,7 +55,7 @@ python scripts/generate_charuco.py \
 Outputs (default directory: `output/`):
 - Full board PDF (auto-named unless `--output` is set).
 
-## Tiled output (multi-page PDF)
+### Tiled output (multi-page PDF)
 
 Generate a large board size and tile it across smaller pages. Each page includes
 crop marks and a tile label, plus a minimap PNG with cutlines.
@@ -62,7 +76,7 @@ Tiling notes:
 - `--crop-mark` controls crop mark length (default: 5mm).
 - A minimap PNG is written next to the PDF with `_minimap.png` suffix.
 
-## Printing notes
+### Printing notes
 
 - Laser printer preferred, matte paper
 - 300 DPI or higher
