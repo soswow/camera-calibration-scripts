@@ -36,7 +36,12 @@ Defaults:
 - PDF output by default
 
 ```bash
-$ python scripts/generate_charuco.py --paper A1 --tile-paper A3 --margin 10 --squares-x 7 --squares-y 10
+$ python scripts/generate_charuco.py \
+  --paper A1 \
+  --tile-paper A3 \
+  --margin 10 \
+  --squares-x 7 \
+  --squares-y 10
 
 ChArUco board written:
   output: output/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles.pdf
