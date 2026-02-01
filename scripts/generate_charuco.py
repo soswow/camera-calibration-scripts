@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import math
 import sys
 
 import cv2
@@ -17,6 +19,8 @@ DEFAULT_DICTIONARY = "DICT_4X4_50"
 DEFAULT_DPI = 300
 DEFAULT_MARGIN_MM = 0.0
 DEFAULT_OUTPUT = "auto"
+DEFAULT_OUTPUT_DIR = "output"
+DEFAULT_FORMAT = "pdf"
 
 PAPER_SIZES_MM = {
     "A0": (841.0, 1189.0),
@@ -88,6 +92,12 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT,
         help="Output image path. Default: auto (constructed from arguments).",
     )
+    parser.add_argument(
+        "--format",
+        choices=("png", "pdf"),
+        default=DEFAULT_FORMAT,
+        help=f"Output format. Default: {DEFAULT_FORMAT}.",
+    )
     return parser.parse_args()
 
 
@@ -133,6 +143,62 @@ def _mm_to_px(mm: float, dpi: int) -> int:
     return int(round(mm / 25.4 * dpi))
 
 
+def _mm_to_points(mm: float) -> float:
+    return mm / 25.4 * 72.0
+
+
+def _to_pil_image(img):
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise SystemExit(
+            "PDF output requires Pillow. Install with: pip install pillow"
+        ) from exc
+
+    if img.ndim == 2:
+        return Image.fromarray(img, mode="L")
+    if img.shape[2] == 3:
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb, mode="RGB")
+    if img.shape[2] == 4:
+        rgba = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+        return Image.fromarray(rgba, mode="RGBA")
+    raise SystemExit("Unsupported image shape for PDF output.")
+
+
+def _write_png(output_path: str, img) -> None:
+    ok = cv2.imwrite(output_path, img)
+    if not ok:
+        raise SystemExit(f"Failed to write output image: {output_path}")
+    _embed_png_dpi(output_path, dpi)
+
+
+def _write_pdf(output_path: str, img, width_mm: float, height_mm: float) -> None:
+    try:
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas
+    except ImportError as exc:
+        raise SystemExit(
+            "PDF output requires reportlab. Install with: pip install reportlab"
+        ) from exc
+
+    pil_img = _to_pil_image(img)
+    width_pt = _mm_to_points(width_mm)
+    height_pt = _mm_to_points(height_mm)
+    pdf = canvas.Canvas(output_path, pagesize=(width_pt, height_pt))
+    pdf.drawImage(
+        ImageReader(pil_img),
+        0,
+        0,
+        width=width_pt,
+        height=height_pt,
+        preserveAspectRatio=False,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
 def _paper_size_mm(name: str) -> tuple[float, float]:
     key = name.upper()
     if key not in PAPER_SIZES_MM:
@@ -145,6 +211,14 @@ def _fmt_mm(mm: float) -> str:
     if abs(mm - round(mm)) < 1e-6:
         return str(int(round(mm)))
     return f"{mm:.2f}".rstrip("0").rstrip(".")
+
+
+def _fmt_mm_floor(mm: float, decimals: int = 2) -> str:
+    factor = 10**decimals
+    value = math.floor(mm * factor) / factor
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
 
 
 def _fmt_prop(value: float) -> str:
@@ -163,6 +237,7 @@ def _auto_output_name(
     square_size: float,
     paper_label: str | None,
     provided_flags: set[str],
+    output_format: str,
 ) -> str:
     parts: list[str] = ["charuco"]
     if paper_label:
@@ -189,7 +264,8 @@ def _auto_output_name(
         extras.append(args.dictionary.lower())
 
     parts.extend(extras)
-    return "_".join(parts) + ".png"
+    filename = "_".join(parts) + f".{output_format}"
+    return os.path.join(DEFAULT_OUTPUT_DIR, filename)
 
 
 def main() -> int:
@@ -204,8 +280,6 @@ def main() -> int:
     squares_y_provided = "--squares-y" in argv
     squares_provided = squares_x_provided or squares_y_provided
 
-    if paper_provided and squares_provided:
-        raise SystemExit("Use either --paper or --squares-x/--squares-y, not both.")
     if squares_x_provided ^ squares_y_provided:
         raise SystemExit("Provide both --squares-x and --squares-y together.")
 
@@ -224,13 +298,20 @@ def main() -> int:
         available_h = paper_height_mm - 2 * args.margin
         if available_w <= 0 or available_h <= 0:
             raise SystemExit("margin is too large for the selected paper size.")
-        squares_x = int(round(available_w / args.square_size))
-        squares_y = int(round(available_h / args.square_size))
-        if squares_x < 2 or squares_y < 2:
-            raise SystemExit("paper size is too small for the requested square-size.")
-        actual_square_w = available_w / squares_x
-        actual_square_h = available_h / squares_y
-        square_size = min(actual_square_w, actual_square_h)
+        if squares_provided:
+            squares_x = args.squares_x
+            squares_y = args.squares_y
+            if squares_x < 2 or squares_y < 2:
+                raise SystemExit("squares-x and squares-y must be >= 2.")
+            square_size = min(available_w / squares_x, available_h / squares_y)
+        else:
+            squares_x = int(round(available_w / args.square_size))
+            squares_y = int(round(available_h / args.square_size))
+            if squares_x < 2 or squares_y < 2:
+                raise SystemExit("paper size is too small for the requested square-size.")
+            actual_square_w = available_w / squares_x
+            actual_square_h = available_h / squares_y
+            square_size = min(actual_square_w, actual_square_h)
         output_width_mm = paper_width_mm
         output_height_mm = paper_height_mm
         paper_label = (args.paper or "A4").upper()
@@ -258,7 +339,17 @@ def main() -> int:
     height_px = _mm_to_px(output_height_mm, args.dpi)
     margin_px = _mm_to_px(args.margin, args.dpi)
     output_path = args.output
-    if output_path == DEFAULT_OUTPUT:
+    output_format = args.format.lower()
+    if output_path != DEFAULT_OUTPUT:
+        ext = os.path.splitext(output_path)[1].lower()
+        if ext in {".png", ".pdf"}:
+            ext_format = ext[1:]
+            if "--format" in provided_flags and ext_format != output_format:
+                raise SystemExit(
+                    f"Output extension ({ext}) does not match --format {output_format}."
+                )
+            output_format = ext_format
+    else:
         output_path = _auto_output_name(
             args=args,
             squares_x=squares_x,
@@ -266,11 +357,16 @@ def main() -> int:
             square_size=square_size,
             paper_label=paper_label,
             provided_flags=provided_flags,
+            output_format=output_format,
         )
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     img = _render_board(board, (width_px, height_px), margin_px, border_bits=1)
-    ok = cv2.imwrite(output_path, img)
-    if not ok:
-        raise SystemExit(f"Failed to write output image: {output_path}")
+    if output_format == "png":
+        _write_png(output_path, img)
+    elif output_format == "pdf":
+        _write_pdf(output_path, img, output_width_mm, output_height_mm)
+    else:
+        raise SystemExit(f"Unknown output format: {output_format}")
 
     board_width_mm = squares_x * square_size
     board_height_mm = squares_y * square_size
@@ -278,16 +374,26 @@ def main() -> int:
     print("ChArUco board written:")
     print(f"  output: {output_path}")
     print(f"  squares: {squares_x} x {squares_y}")
-    print(f"  square size (mm): {square_size}")
-    if paper_provided and abs(square_size - args.square_size) > 0.01:
-        print(f"  requested square size (mm): {args.square_size}")
+    print(f"  square size (mm): {_fmt_mm_floor(square_size)}")
+    if (
+        paper_provided
+        and "--square-size" in provided_flags
+        and abs(square_size - args.square_size) > 0.01
+    ):
+        print(f"  requested square size (mm): {_fmt_mm_floor(args.square_size)}")
     print(f"  marker proportion: {args.marker_proportion}")
-    print(f"  marker size (mm): {marker_size}")
+    print(f"  marker size (mm): {_fmt_mm_floor(marker_size)}")
     print(f"  dictionary: {args.dictionary}")
-    print(f"  board size (mm): {board_width_mm} x {board_height_mm}")
+    print(
+        "  board size (mm):"
+        f" {_fmt_mm_floor(board_width_mm)} x {_fmt_mm_floor(board_height_mm)}"
+    )
     if paper_provided:
         print(f"  paper: {paper_label}")
-    print(f"  output size (mm): {output_width_mm} x {output_height_mm}")
+    print(
+        "  output size (mm):"
+        f" {_fmt_mm_floor(output_width_mm)} x {_fmt_mm_floor(output_height_mm)}"
+    )
     print(f"  pixels: {width_px} x {height_px}")
     return 0
 

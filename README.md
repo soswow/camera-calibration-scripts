@@ -35,6 +35,9 @@ python scripts/generate_charuco.py \
   --output charuco_A3.png
 ```
 
+Outputs (default directory: `output/`):
+- Full board image (auto-named unless `--output` is set).
+
 ## Printing notes (from the PDF)
 
 - Laser printer preferred, matte paper
