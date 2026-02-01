@@ -25,6 +25,7 @@ DEFAULT_FORMAT = "pdf"
 DEFAULT_TILE_BLEED_MM = 2.0
 DEFAULT_CROP_MARK_MM = 5.0
 DEFAULT_CROP_STROKE_MM = 0.3
+DEFAULT_TILE_LABEL_PT = 8.0
 DEFAULT_MINIMAP_MAX_PX = 2000
 
 PAPER_SIZES_MM = {
@@ -289,6 +290,7 @@ def _draw_crop_marks(
                 pdf.line(x0, pos, x0, seg_end)
                 pos = next_pos
                 idx += 1
+
     # Bottom-left
     draw_dashed(
         trim_x0 - mark_len_pt,
@@ -343,6 +345,27 @@ def _draw_crop_marks(
     )
 
 
+def _draw_tile_label(
+    pdf,
+    label: str,
+    *,
+    trim_x0: float,
+    trim_y1: float,
+    page_h_pt: float,
+    stroke_pt: float,
+    font_pt: float,
+) -> None:
+    pdf.setFont("Helvetica", font_pt)
+    label_width = pdf.stringWidth(label, "Helvetica", font_pt)
+    pad = max(1.0, stroke_pt * 2.0)
+    x = trim_x0 - pad - label_width
+    y = trim_y1 + pad + font_pt
+    if x < 0 or y > page_h_pt:
+        return
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.drawString(x, y - font_pt, label)
+
+
 def _write_tiled_pdf(
     output_path: str,
     canvas_img,
@@ -384,6 +407,7 @@ def _write_tiled_pdf(
     trim_y1 = _mm_to_points(tile_margin_mm + tile_content_h_mm)
     mark_len_pt = _mm_to_points(crop_mark_mm)
     stroke_pt = _mm_to_points(DEFAULT_CROP_STROKE_MM)
+    label_pt = DEFAULT_TILE_LABEL_PT
 
     canvas_w_px = canvas_img.shape[1]
     canvas_h_px = canvas_img.shape[0]
@@ -424,6 +448,15 @@ def _write_tiled_pdf(
                 mask="auto",
             )
             _draw_crop_marks(pdf, trim_x0, trim_y0, trim_x1, trim_y1, mark_len_pt, stroke_pt)
+            _draw_tile_label(
+                pdf,
+                f"r{row}c{col}",
+                trim_x0=trim_x0,
+                trim_y1=trim_y1,
+                page_h_pt=tile_h_pt,
+                stroke_pt=stroke_pt,
+                font_pt=label_pt,
+            )
             pdf.showPage()
     pdf.save()
 
@@ -452,6 +485,10 @@ def _write_minimap(
     overlay = minimap.copy()
     thickness = 1
     line_color = (0, 255, 0)
+    tile_w_scaled = tile_content_w_px * scale
+    tile_h_scaled = tile_content_h_px * scale
+    font_scale = max(0.3, min(0.8, min(tile_w_scaled, tile_h_scaled) / 400.0))
+    font = cv2.FONT_HERSHEY_SIMPLEX
 
     for c in range(cols + 1):
         x = int(round(c * tile_content_w_px * scale))
@@ -463,6 +500,24 @@ def _write_minimap(
         cv2.line(overlay, (0, y), (new_w - 1, y), line_color, thickness)
 
     minimap = cv2.addWeighted(overlay, 0.5, minimap, 0.5, 0)
+    for r in range(rows):
+        for c in range(cols):
+            label = f"r{r}c{c}"
+            text_size, baseline = cv2.getTextSize(label, font, font_scale, 1)
+            x = int(round(c * tile_content_w_px * scale)) + 3
+            y = int(round(r * tile_content_h_px * scale)) + 3 + text_size[1]
+            if x + text_size[0] >= new_w or y + baseline >= new_h:
+                continue
+            cv2.putText(
+                minimap,
+                label,
+                (x, y),
+                font,
+                font_scale,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
+            )
     ok = cv2.imwrite(output_path, minimap)
     if not ok:
         raise SystemExit(f"Failed to write minimap: {output_path}")
