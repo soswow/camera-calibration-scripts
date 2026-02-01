@@ -10,6 +10,7 @@ import sys
 
 import cv2
 from cv2 import aruco
+import numpy as np
 
 DEFAULT_SQUARES_X = 10
 DEFAULT_SQUARES_Y = 7
@@ -21,6 +22,10 @@ DEFAULT_MARGIN_MM = 0.0
 DEFAULT_OUTPUT = "auto"
 DEFAULT_OUTPUT_DIR = "output"
 DEFAULT_FORMAT = "pdf"
+DEFAULT_TILE_BLEED_MM = 2.0
+DEFAULT_CROP_MARK_MM = 5.0
+DEFAULT_CROP_STROKE_MM = 0.3
+DEFAULT_MINIMAP_MAX_PX = 2000
 
 PAPER_SIZES_MM = {
     "A0": (841.0, 1189.0),
@@ -76,6 +81,11 @@ def _parse_args() -> argparse.Namespace:
         help="Paper size (e.g. A4, A3, Letter). Default: A4 when used.",
     )
     parser.add_argument(
+        "--tile-paper",
+        default=None,
+        help="Tile paper size for multipage output (e.g. A3). Requires --paper.",
+    )
+    parser.add_argument(
         "--dpi",
         type=int,
         default=DEFAULT_DPI,
@@ -86,6 +96,21 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_MARGIN_MM,
         help=f"Margin size in millimeters. Default: {DEFAULT_MARGIN_MM}.",
+    )
+    parser.add_argument(
+        "--tile-bleed",
+        type=float,
+        default=DEFAULT_TILE_BLEED_MM,
+        help=(
+            "Bleed (overflow) in millimeters beyond crop marks for tiled output. "
+            f"Default: {DEFAULT_TILE_BLEED_MM}."
+        ),
+    )
+    parser.add_argument(
+        "--crop-mark",
+        type=float,
+        default=DEFAULT_CROP_MARK_MM,
+        help=f"Crop mark length in millimeters. Default: {DEFAULT_CROP_MARK_MM}.",
     )
     parser.add_argument(
         "--output",
@@ -170,7 +195,6 @@ def _write_png(output_path: str, img) -> None:
     ok = cv2.imwrite(output_path, img)
     if not ok:
         raise SystemExit(f"Failed to write output image: {output_path}")
-    _embed_png_dpi(output_path, dpi)
 
 
 def _write_pdf(output_path: str, img, width_mm: float, height_mm: float) -> None:
@@ -197,6 +221,273 @@ def _write_pdf(output_path: str, img, width_mm: float, height_mm: float) -> None
     )
     pdf.showPage()
     pdf.save()
+
+
+def _tile_grid_counts(
+    main_width_mm: float,
+    main_height_mm: float,
+    tile_width_mm: float,
+    tile_height_mm: float,
+) -> tuple[int, int]:
+    cols = max(1, int(round(main_width_mm / tile_width_mm)))
+    rows = max(1, int(round(main_height_mm / tile_height_mm)))
+    return cols, rows
+
+
+def _draw_crop_marks(
+    pdf,
+    trim_x0: float,
+    trim_y0: float,
+    trim_x1: float,
+    trim_y1: float,
+    mark_len_pt: float,
+    stroke_pt: float,
+) -> None:
+    if mark_len_pt <= 0 or stroke_pt <= 0:
+        return
+    dash_len = max(1.0, stroke_pt * 2.0)
+    offset = stroke_pt / 2.0
+
+    def draw_dashed(x0: float, y0: float, x1: float, y1: float) -> None:
+        pdf.setLineWidth(stroke_pt)
+        horizontal = abs(y1 - y0) < 1e-6
+        if horizontal:
+            start = x0
+            end = x1
+            step = dash_len if end >= start else -dash_len
+            idx = 0
+            pos = start
+            while (pos <= end if step > 0 else pos >= end):
+                next_pos = pos + step
+                if step > 0:
+                    seg_end = min(next_pos, end)
+                else:
+                    seg_end = max(next_pos, end)
+                if idx % 2 == 0:
+                    pdf.setStrokeColorRGB(1, 1, 1)
+                else:
+                    pdf.setStrokeColorRGB(0, 0, 0)
+                pdf.line(pos, y0, seg_end, y0)
+                pos = next_pos
+                idx += 1
+        else:
+            start = y0
+            end = y1
+            step = dash_len if end >= start else -dash_len
+            idx = 0
+            pos = start
+            while (pos <= end if step > 0 else pos >= end):
+                next_pos = pos + step
+                if step > 0:
+                    seg_end = min(next_pos, end)
+                else:
+                    seg_end = max(next_pos, end)
+                if idx % 2 == 0:
+                    pdf.setStrokeColorRGB(1, 1, 1)
+                else:
+                    pdf.setStrokeColorRGB(0, 0, 0)
+                pdf.line(x0, pos, x0, seg_end)
+                pos = next_pos
+                idx += 1
+    # Bottom-left
+    draw_dashed(
+        trim_x0 - mark_len_pt,
+        trim_y0 - offset,
+        trim_x0,
+        trim_y0 - offset,
+    )
+    draw_dashed(
+        trim_x0 - offset,
+        trim_y0 - mark_len_pt,
+        trim_x0 - offset,
+        trim_y0,
+    )
+    # Bottom-right
+    draw_dashed(
+        trim_x1,
+        trim_y0 - offset,
+        trim_x1 + mark_len_pt,
+        trim_y0 - offset,
+    )
+    draw_dashed(
+        trim_x1 + offset,
+        trim_y0 - mark_len_pt,
+        trim_x1 + offset,
+        trim_y0,
+    )
+    # Top-left
+    draw_dashed(
+        trim_x0 - mark_len_pt,
+        trim_y1 + offset,
+        trim_x0,
+        trim_y1 + offset,
+    )
+    draw_dashed(
+        trim_x0 - offset,
+        trim_y1,
+        trim_x0 - offset,
+        trim_y1 + mark_len_pt,
+    )
+    # Top-right
+    draw_dashed(
+        trim_x1,
+        trim_y1 + offset,
+        trim_x1 + mark_len_pt,
+        trim_y1 + offset,
+    )
+    draw_dashed(
+        trim_x1 + offset,
+        trim_y1,
+        trim_x1 + offset,
+        trim_y1 + mark_len_pt,
+    )
+
+
+def _write_tiled_pdf(
+    output_path: str,
+    canvas_img,
+    *,
+    tile_width_mm: float,
+    tile_height_mm: float,
+    tile_margin_mm: float,
+    tile_bleed_mm: float,
+    crop_mark_mm: float,
+    dpi: int,
+    cols: int,
+    rows: int,
+) -> None:
+    try:
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas as pdf_canvas
+    except ImportError as exc:
+        raise SystemExit(
+            "PDF output requires reportlab. Install with: pip install reportlab"
+        ) from exc
+
+    tile_content_w_mm = tile_width_mm - 2 * tile_margin_mm
+    tile_content_h_mm = tile_height_mm - 2 * tile_margin_mm
+    tile_content_w_px = _mm_to_px(tile_content_w_mm, dpi)
+    tile_content_h_px = _mm_to_px(tile_content_h_mm, dpi)
+    bleed_px = _mm_to_px(tile_bleed_mm, dpi)
+    tile_img_w_px = tile_content_w_px + 2 * bleed_px
+    tile_img_h_px = tile_content_h_px + 2 * bleed_px
+
+    tile_w_pt = _mm_to_points(tile_width_mm)
+    tile_h_pt = _mm_to_points(tile_height_mm)
+    draw_w_pt = _mm_to_points(tile_content_w_mm + 2 * tile_bleed_mm)
+    draw_h_pt = _mm_to_points(tile_content_h_mm + 2 * tile_bleed_mm)
+    draw_x_pt = _mm_to_points(tile_margin_mm - tile_bleed_mm)
+    draw_y_pt = _mm_to_points(tile_margin_mm - tile_bleed_mm)
+    trim_x0 = _mm_to_points(tile_margin_mm)
+    trim_y0 = _mm_to_points(tile_margin_mm)
+    trim_x1 = _mm_to_points(tile_margin_mm + tile_content_w_mm)
+    trim_y1 = _mm_to_points(tile_margin_mm + tile_content_h_mm)
+    mark_len_pt = _mm_to_points(crop_mark_mm)
+    stroke_pt = _mm_to_points(DEFAULT_CROP_STROKE_MM)
+
+    canvas_w_px = canvas_img.shape[1]
+    canvas_h_px = canvas_img.shape[0]
+
+    pdf = pdf_canvas.Canvas(output_path, pagesize=(tile_w_pt, tile_h_pt))
+    for row in range(rows):
+        for col in range(cols):
+            x0_px = col * tile_content_w_px
+            y0_px = row * tile_content_h_px
+            x1_px = x0_px + tile_content_w_px
+            y1_px = y0_px + tile_content_h_px
+
+            tile_img = np.full(
+                (tile_img_h_px, tile_img_w_px),
+                255,
+                dtype=canvas_img.dtype,
+            )
+            src_x0 = max(0, x0_px - bleed_px)
+            src_y0 = max(0, y0_px - bleed_px)
+            src_x1 = min(canvas_w_px, x1_px + bleed_px)
+            src_y1 = min(canvas_h_px, y1_px + bleed_px)
+
+            dst_x0 = src_x0 - (x0_px - bleed_px)
+            dst_y0 = src_y0 - (y0_px - bleed_px)
+            dst_x1 = dst_x0 + (src_x1 - src_x0)
+            dst_y1 = dst_y0 + (src_y1 - src_y0)
+
+            tile_img[dst_y0:dst_y1, dst_x0:dst_x1] = canvas_img[src_y0:src_y1, src_x0:src_x1]
+
+            pil_tile = _to_pil_image(tile_img)
+            pdf.drawImage(
+                ImageReader(pil_tile),
+                draw_x_pt,
+                draw_y_pt,
+                width=draw_w_pt,
+                height=draw_h_pt,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+            _draw_crop_marks(pdf, trim_x0, trim_y0, trim_x1, trim_y1, mark_len_pt, stroke_pt)
+            pdf.showPage()
+    pdf.save()
+
+
+def _write_minimap(
+    output_path: str,
+    canvas_img,
+    *,
+    tile_content_w_px: int,
+    tile_content_h_px: int,
+    cols: int,
+    rows: int,
+) -> None:
+    canvas_h_px, canvas_w_px = canvas_img.shape[:2]
+    max_dim = max(canvas_w_px, canvas_h_px)
+    scale = 1.0
+    if max_dim > DEFAULT_MINIMAP_MAX_PX:
+        scale = DEFAULT_MINIMAP_MAX_PX / max_dim
+    new_w = max(1, int(round(canvas_w_px * scale)))
+    new_h = max(1, int(round(canvas_h_px * scale)))
+    if scale != 1.0:
+        resized = cv2.resize(canvas_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    else:
+        resized = canvas_img.copy()
+    minimap = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+    overlay = minimap.copy()
+    thickness = 1
+    line_color = (0, 255, 0)
+
+    for c in range(cols + 1):
+        x = int(round(c * tile_content_w_px * scale))
+        x = min(max(x, 0), new_w - 1)
+        cv2.line(overlay, (x, 0), (x, new_h - 1), line_color, thickness)
+    for r in range(rows + 1):
+        y = int(round(r * tile_content_h_px * scale))
+        y = min(max(y, 0), new_h - 1)
+        cv2.line(overlay, (0, y), (new_w - 1, y), line_color, thickness)
+
+    minimap = cv2.addWeighted(overlay, 0.5, minimap, 0.5, 0)
+    ok = cv2.imwrite(output_path, minimap)
+    if not ok:
+        raise SystemExit(f"Failed to write minimap: {output_path}")
+
+
+def _center_paste(canvas_img, board_img) -> None:
+    canvas_h, canvas_w = canvas_img.shape[:2]
+    board_h, board_w = board_img.shape[:2]
+    offset_x = int(round((canvas_w - board_w) / 2))
+    offset_y = int(round((canvas_h - board_h) / 2))
+
+    dst_x0 = max(offset_x, 0)
+    dst_y0 = max(offset_y, 0)
+    dst_x1 = min(offset_x + board_w, canvas_w)
+    dst_y1 = min(offset_y + board_h, canvas_h)
+
+    if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
+        return
+
+    src_x0 = max(0, -offset_x)
+    src_y0 = max(0, -offset_y)
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+
+    canvas_img[dst_y0:dst_y1, dst_x0:dst_x1] = board_img[src_y0:src_y1, src_x0:src_x1]
 
 
 def _paper_size_mm(name: str) -> tuple[float, float]:
@@ -229,6 +520,11 @@ def _sanitize_token(token: str) -> str:
     return token.replace(".", "p")
 
 
+def _minimap_path(output_path: str) -> str:
+    base, _ = os.path.splitext(output_path)
+    return f"{base}_minimap.png"
+
+
 def _auto_output_name(
     *,
     args: argparse.Namespace,
@@ -238,6 +534,8 @@ def _auto_output_name(
     paper_label: str | None,
     provided_flags: set[str],
     output_format: str,
+    tile_label: str | None,
+    tile_grid: tuple[int, int] | None,
 ) -> str:
     parts: list[str] = ["charuco"]
     if paper_label:
@@ -260,6 +558,10 @@ def _auto_output_name(
         extras.append(f"{args.dpi}dpi")
     if args.margin != DEFAULT_MARGIN_MM or "--margin" in provided_flags:
         extras.append(f"margin{_sanitize_token(_fmt_mm(args.margin))}mm")
+    if tile_label:
+        extras.append(f"tile{tile_label}")
+        if tile_grid:
+            extras.append(f"{tile_grid[0]}x{tile_grid[1]}tiles")
     if args.dictionary != DEFAULT_DICTIONARY or "--dictionary" in provided_flags:
         extras.append(args.dictionary.lower())
 
@@ -276,12 +578,15 @@ def main() -> int:
         if token.startswith("--"):
             provided_flags.add(token.split("=", 1)[0])
     paper_provided = "--paper" in argv
+    tile_paper_provided = "--tile-paper" in argv
     squares_x_provided = "--squares-x" in argv
     squares_y_provided = "--squares-y" in argv
     squares_provided = squares_x_provided or squares_y_provided
 
     if squares_x_provided ^ squares_y_provided:
         raise SystemExit("Provide both --squares-x and --squares-y together.")
+    if tile_paper_provided and not paper_provided:
+        raise SystemExit("--tile-paper requires --paper to set the main size.")
 
     if not (0.0 < args.marker_proportion < 1.0):
         raise SystemExit("marker-proportion must be in the 0-1 range (exclusive).")
@@ -289,15 +594,44 @@ def main() -> int:
         raise SystemExit("square-size must be > 0.")
     if args.margin < 0:
         raise SystemExit("margin must be >= 0.")
+    if args.tile_bleed < 0:
+        raise SystemExit("tile-bleed must be >= 0.")
+    if args.crop_mark < 0:
+        raise SystemExit("crop-mark must be >= 0.")
+    if tile_paper_provided and args.tile_bleed > args.margin:
+        raise SystemExit("tile-bleed must be <= margin for tiled output.")
     if args.dpi <= 0:
         raise SystemExit("dpi must be > 0.")
 
+    tile_label = None
+    tile_cols = None
+    tile_rows = None
+    tile_width_mm = None
+    tile_height_mm = None
+    tile_printable_w = None
+    tile_printable_h = None
+
     if paper_provided:
         paper_width_mm, paper_height_mm = _paper_size_mm(args.paper or "A4")
-        available_w = paper_width_mm - 2 * args.margin
-        available_h = paper_height_mm - 2 * args.margin
-        if available_w <= 0 or available_h <= 0:
-            raise SystemExit("margin is too large for the selected paper size.")
+        paper_label = (args.paper or "A4").upper()
+        if tile_paper_provided:
+            tile_width_mm, tile_height_mm = _paper_size_mm(args.tile_paper)
+            tile_label = args.tile_paper.upper()
+            tile_cols, tile_rows = _tile_grid_counts(
+                paper_width_mm, paper_height_mm, tile_width_mm, tile_height_mm
+            )
+            tile_printable_w = tile_width_mm - 2 * args.margin
+            tile_printable_h = tile_height_mm - 2 * args.margin
+            if tile_printable_w <= 0 or tile_printable_h <= 0:
+                raise SystemExit("margin is too large for the selected tile paper size.")
+            available_w = tile_printable_w * tile_cols
+            available_h = tile_printable_h * tile_rows
+        else:
+            available_w = paper_width_mm - 2 * args.margin
+            available_h = paper_height_mm - 2 * args.margin
+            if available_w <= 0 or available_h <= 0:
+                raise SystemExit("margin is too large for the selected paper size.")
+
         if squares_provided:
             squares_x = args.squares_x
             squares_y = args.squares_y
@@ -312,9 +646,13 @@ def main() -> int:
             actual_square_w = available_w / squares_x
             actual_square_h = available_h / squares_y
             square_size = min(actual_square_w, actual_square_h)
-        output_width_mm = paper_width_mm
-        output_height_mm = paper_height_mm
-        paper_label = (args.paper or "A4").upper()
+
+        if tile_paper_provided:
+            output_width_mm = available_w
+            output_height_mm = available_h
+        else:
+            output_width_mm = paper_width_mm
+            output_height_mm = paper_height_mm
     else:
         squares_x = args.squares_x
         squares_y = args.squares_y
@@ -326,6 +664,8 @@ def main() -> int:
         paper_label = None
 
     marker_size = square_size * args.marker_proportion
+    board_width_mm = squares_x * square_size
+    board_height_mm = squares_y * square_size
 
     dictionary = _get_dictionary(args.dictionary)
     board = _create_board(
@@ -335,9 +675,6 @@ def main() -> int:
         marker_size,
         dictionary,
     )
-    width_px = _mm_to_px(output_width_mm, args.dpi)
-    height_px = _mm_to_px(output_height_mm, args.dpi)
-    margin_px = _mm_to_px(args.margin, args.dpi)
     output_path = args.output
     output_format = args.format.lower()
     if output_path != DEFAULT_OUTPUT:
@@ -358,18 +695,57 @@ def main() -> int:
             paper_label=paper_label,
             provided_flags=provided_flags,
             output_format=output_format,
+            tile_label=tile_label,
+            tile_grid=(tile_cols, tile_rows) if tile_paper_provided else None,
         )
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    img = _render_board(board, (width_px, height_px), margin_px, border_bits=1)
-    if output_format == "png":
-        _write_png(output_path, img)
-    elif output_format == "pdf":
-        _write_pdf(output_path, img, output_width_mm, output_height_mm)
+    minimap_path = None
+    if tile_paper_provided:
+        if output_format != "pdf":
+            raise SystemExit("Tiled output requires PDF format.")
+        tile_content_w_px = _mm_to_px(tile_printable_w, args.dpi)
+        tile_content_h_px = _mm_to_px(tile_printable_h, args.dpi)
+        canvas_w_px = tile_content_w_px * tile_cols
+        canvas_h_px = tile_content_h_px * tile_rows
+        board_w_px = _mm_to_px(board_width_mm, args.dpi)
+        board_h_px = _mm_to_px(board_height_mm, args.dpi)
+        board_img = _render_board(board, (board_w_px, board_h_px), 0, border_bits=1)
+        canvas_img = np.full((canvas_h_px, canvas_w_px), 255, dtype=board_img.dtype)
+        _center_paste(canvas_img, board_img)
+        _write_tiled_pdf(
+            output_path,
+            canvas_img,
+            tile_width_mm=tile_width_mm,
+            tile_height_mm=tile_height_mm,
+            tile_margin_mm=args.margin,
+            tile_bleed_mm=args.tile_bleed,
+            crop_mark_mm=args.crop_mark,
+            dpi=args.dpi,
+            cols=tile_cols,
+            rows=tile_rows,
+        )
+        minimap_path = _minimap_path(output_path)
+        _write_minimap(
+            minimap_path,
+            canvas_img,
+            tile_content_w_px=tile_content_w_px,
+            tile_content_h_px=tile_content_h_px,
+            cols=tile_cols,
+            rows=tile_rows,
+        )
+        width_px = canvas_w_px
+        height_px = canvas_h_px
     else:
-        raise SystemExit(f"Unknown output format: {output_format}")
-
-    board_width_mm = squares_x * square_size
-    board_height_mm = squares_y * square_size
+        width_px = _mm_to_px(output_width_mm, args.dpi)
+        height_px = _mm_to_px(output_height_mm, args.dpi)
+        margin_px = _mm_to_px(args.margin, args.dpi)
+        img = _render_board(board, (width_px, height_px), margin_px, border_bits=1)
+        if output_format == "png":
+            _write_png(output_path, img)
+        elif output_format == "pdf":
+            _write_pdf(output_path, img, output_width_mm, output_height_mm)
+        else:
+            raise SystemExit(f"Unknown output format: {output_format}")
 
     print("ChArUco board written:")
     print(f"  output: {output_path}")
@@ -389,11 +765,30 @@ def main() -> int:
         f" {_fmt_mm_floor(board_width_mm)} x {_fmt_mm_floor(board_height_mm)}"
     )
     if paper_provided:
-        print(f"  paper: {paper_label}")
-    print(
-        "  output size (mm):"
-        f" {_fmt_mm_floor(output_width_mm)} x {_fmt_mm_floor(output_height_mm)}"
-    )
+        if tile_paper_provided:
+            print(f"  paper: {paper_label} (main)")
+        else:
+            print(f"  paper: {paper_label}")
+    if tile_paper_provided:
+        print(f"  tile paper: {tile_label}")
+        print(f"  tiles: {tile_cols} x {tile_rows}")
+        print(f"  tile margin (mm): {_fmt_mm_floor(args.margin)}")
+        print(f"  tile bleed (mm): {_fmt_mm_floor(args.tile_bleed)}")
+        print(
+            "  tile printable (mm):"
+            f" {_fmt_mm_floor(tile_printable_w)} x {_fmt_mm_floor(tile_printable_h)}"
+        )
+        print(
+            "  tiled area (mm):"
+            f" {_fmt_mm_floor(output_width_mm)} x {_fmt_mm_floor(output_height_mm)}"
+        )
+        if minimap_path:
+            print(f"  minimap: {minimap_path}")
+    else:
+        print(
+            "  output size (mm):"
+            f" {_fmt_mm_floor(output_width_mm)} x {_fmt_mm_floor(output_height_mm)}"
+        )
     print(f"  pixels: {width_px} x {height_px}")
     return 0
 
