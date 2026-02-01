@@ -36,7 +36,25 @@ Defaults:
 - PDF output by default
 
 ```bash
-python scripts/generate_charuco.py --output charuco_A4.pdf
+$ python scripts/generate_charuco.py --paper A1 --tile-paper A3 --margin 10 --squares-x 7 --squares-y 10
+
+ChArUco board written:
+  output: output/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles.pdf
+  squares: 7 x 10
+  square size (mm): 79.14
+  marker proportion: 0.7
+  marker size (mm): 55.39
+  dictionary: DICT_4X4_50
+  board size (mm): 554 x 791.42
+  paper: A1 (main)
+  tile paper: A3
+  tiles: 2 x 2
+  tile margin (mm): 10
+  tile bleed (mm): 2
+  tile printable (mm): 277 x 400
+  tiled area (mm): 554 x 800
+  minimap: output/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles_minimap.png
+  pixels: 6544 x 9448
 ```
 
 You can use `--paper` together with `--squares-x/--squares-y` to have the square
