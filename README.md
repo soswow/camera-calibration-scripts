@@ -1,6 +1,35 @@
 # Camera Calibration Helpers
 
-Small set of scripts to support camera calibration tasks. Each script has its own section below.
+Set of scripts to support camera calibration tasks (specifically using ps3eye cameras)
+
+## Scripts
+
+### `charuco_board/generate_charuco.py`
+
+Generate print-ready ChArUco boards as single-page PDFs or tiled multi-page PDFs with crop marks, tile labels, and a minimap for assembly. Use this to create the physical calibration target that the rest of the tools expect.
+
+<table>
+  <tr>
+    <td><img src="docs/images/generate_charuco/charuco_pdf_result.jpg" alt="ChArUco PDF output" width="360"></td>
+    <td><img src="docs/images/generate_charuco/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles_minimap.png" alt="Tiled output minimap" width="360"></td>
+  </tr>
+</table>
+
+### `ps3eye_tools/test_ps3eye_focus.py`
+
+Small utilities for quick sanity checks with a PS3 Eye camera. Use them to confirm device access, dial in exposure, and judge focus before running calibration.
+
+<img src="docs/images/ps3eye_tools/sharp_tool_demo.png" alt="Focus tool example" width="720">
+
+
+### `live_calibration/live_charuco_calibration.py`
+
+Interactive capture tool for collecting ChArUco observations in real time. It shows a live preview with an optional coverage heatmap, accepts frames that meet your detection/quality thresholds, and periodically recalibrates to give immediate feedback on reprojection error and coverage gaps.
+
+See demo here: https://www.instagram.com/p/DUfEMg_k39c/
+
+<img src="docs/images/live_charuco_calibration/demo-screenshot.jpg" alt="Live ChArUco calibration preview" width="720">
+
 
 ## Setup
 
@@ -10,163 +39,4 @@ Create and activate a virtual environment:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-```
-
-## Scripts
-
-### ChArUco board generator (`scripts/generate_charuco.py`)
-
-Generate print-ready ChArUco boards as single-page PDFs or tiled multi-page PDFs with
-crop marks, tile labels, and a minimap for assembly.
-
-<table>
-  <tr>
-    <td><img src="docs/images/charuco_pdf_result.jpg" alt="ChArUco PDF output" width="360"></td>
-    <td><img src="docs/images/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles_minimap.png" alt="Tiled output minimap" width="360"></td>
-  </tr>
-</table>
-
-### Generate a ChArUco board
-
-Defaults:
-- 10 x 7 squares
-- 70 mm square size
-- 0.7 marker proportion (49 mm markers)
-- 300 DPI render
-- PDF output by default
-
-```bash
-$ python scripts/generate_charuco.py \
-  --paper A1 \
-  --tile-paper A3 \
-  --margin 10 \
-  --squares-x 7 \
-  --squares-y 10
-
-ChArUco board written:
-  output: output/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles.pdf
-  squares: 7 x 10
-  square size (mm): 79.14
-  marker proportion: 0.7
-  marker size (mm): 55.39
-  dictionary: DICT_4X4_50
-  board size (mm): 554 x 791.42
-  paper: A1 (main)
-  tile paper: A3
-  tiles: 2 x 2
-  tile margin (mm): 10
-  tile bleed (mm): 2
-  tile printable (mm): 277 x 400
-  tiled area (mm): 554 x 800
-  minimap: output/charuco_A1_7x10_79p14mm_margin10mm_tileA3_2x2tiles_minimap.png
-  pixels: 6544 x 9448
-```
-
-You can use `--paper` together with `--squares-x/--squares-y` to have the square
-size computed to fit the paper (respecting margins).
-
-Example for a paper-sized board (A3 @ 300 DPI):
-
-```bash
-python scripts/generate_charuco.py \
-  --paper A3 \
-  --square-size 70 \
-  --marker-proportion 0.7 \
-  --output charuco_A3.pdf
-```
-
-Outputs (default directory: `output/`):
-- Full board PDF (auto-named unless `--output` is set).
-
-### Tiled output (multi-page PDF)
-
-Generate a large board size and tile it across smaller pages. Each page includes
-crop marks and a tile label, plus a minimap PNG with cutlines.
-
-```bash
-python scripts/generate_charuco.py \
-  --paper A1 \
-  --tile-paper A3 \
-  --margin 10 \
-  --squares-x 8 \
-  --squares-y 12
-```
-
-Tiling notes:
-- `--tile-paper` requires `--paper` (the main board size).
-- `--margin` applies per tile page.
-- `--tile-bleed` controls the overflow beyond crop marks (default: 2mm).
-- `--crop-mark` controls crop mark length (default: 5mm).
-- A minimap PNG is written next to the PDF with `_minimap.png` suffix.
-
-### Printing notes
-
-- Laser printer preferred, matte paper
-- 300 DPI or higher
-- Disable any printer scaling (no “fit to page”)
-- Print a reference ruler and verify scale
-- After printing, measure square size; target error < 0.5 mm
-- Mount to a flat surface; do not laminate
-
-### Frame scoring (`scripts/score_charuco_frames.py`)
-
-Scores each frame by sharpness and board detection quality, and writes a sorted JSON list.
-
-```bash
-python scripts/score_charuco_frames.py \
-  --input /path/to/frames \
-  --output frame_scores.json
-```
-
-### Diverse selection (`scripts/select_diverse_frames.py`)
-
-Selects a diverse subset of frames using proxy pose metrics (center, size, aspect).
-
-```bash
-python scripts/select_diverse_frames.py \
-  --input frame_scores.json \
-  --output selected_frames.json \
-  --select 50 \
-  --top-k 300
-```
-
-### Calibration (`scripts/calibrate_charuco.py`)
-
-Calibrates camera intrinsics from the selected frames and writes `calibration.json`.
-
-```bash
-python scripts/calibrate_charuco.py \
-  --input selected_frames.json \
-  --output calibration.json
-```
-
-Optional pruning by per-view error threshold:
-
-```bash
-python scripts/calibrate_charuco.py \
-  --input selected_frames.json \
-  --output calibration.json \
-  --prune-threshold 1.5
-```
-
-### Undistort preview (`scripts/undistort_images.py`)
-
-Batch-undistorts images using `calibration.json` for visual inspection.
-
-```bash
-python scripts/undistort_images.py \
-  --calibration calibration.json \
-  --input /path/to/frames \
-  --output /path/to/frames-undistorted
-```
-
-### Recommended pipeline
-
-```bash
-python scripts/score_charuco_frames.py --input /path/to/frames --output frame_scores.json
-python scripts/select_diverse_frames.py --input frame_scores.json --output selected_frames.json
-python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json
-python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json --prune-threshold 1.5
-python scripts/calibrate_charuco.py --input selected_frames.json --output calibration.json
-python scripts/undistort_images.py --calibration calibration.json --input /path/to/frames --output /path/to/frames-undistorted
 ```
