@@ -10,3 +10,4 @@ calibration.json
 frame_scores.json
 selected_frames.json
 undistorted-output.mp4
+calibration_frames/
