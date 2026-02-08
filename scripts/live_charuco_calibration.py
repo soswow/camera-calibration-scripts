@@ -126,6 +126,18 @@ HEATMAP_OVERLAY_ALPHA = 0.3
 # Show a separate heatmap-only window.
 SHOW_HEATMAP_WINDOW = False
 
+# Residual scatter plot (dx vs dy)
+# Show residual scatter plot in a separate window.
+SHOW_RESIDUAL_SCATTER = True
+# Max absolute residual (pixels) shown on the scatter axes.
+RESIDUAL_SCATTER_RANGE_PX = 2.0
+# Scatter image size in pixels.
+RESIDUAL_SCATTER_SIZE = 320
+# Minimum number of residual samples to draw scatter.
+RESIDUAL_SCATTER_MIN_SAMPLES = 30
+# Maximum number of residual samples to plot (0 = no cap).
+RESIDUAL_SCATTER_MAX_SAMPLES = 2000
+
 # Saving
 # Write calibration parameters to a JSON file whenever a new calibration result arrives.
 # Uses atomic replace to avoid partial files if the app exits mid-write.
@@ -447,6 +459,66 @@ def _rebuild_heatmap(all_cells):
     for poly in all_cells:
         _apply_cell_polygon(hm, poly, 1.0)
     return hm
+
+
+def _draw_residual_scatter(samples):
+    import cv2
+    import numpy as np
+
+    size = int(RESIDUAL_SCATTER_SIZE)
+    size = max(64, size)
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+    center = size // 2
+    span = max(1e-6, float(RESIDUAL_SCATTER_RANGE_PX))
+    scale = (size / 2 - 1) / span
+    # Axes
+    cv2.line(img, (0, center), (size - 1, center), (60, 60, 60), 1, cv2.LINE_AA)
+    cv2.line(img, (center, 0), (center, size - 1), (60, 60, 60), 1, cv2.LINE_AA)
+    # Points
+    for dx, dy in samples:
+        if abs(dx) > span or abs(dy) > span:
+            continue
+        x = int(round(center + dx * scale))
+        y = int(round(center - dy * scale))
+        if 0 <= x < size and 0 <= y < size:
+            img[y, x] = (0, 255, 0)
+    return img
+
+
+def _compute_residual_samples(aruco, cv2, board, all_corners, all_ids, camera_matrix, dist_coeffs):
+    import numpy as np
+
+    if camera_matrix is None or dist_coeffs is None:
+        return []
+    board_corners = _get_board_corners(board)
+    samples = []
+    for corners, ids in zip(all_corners, all_ids):
+        if corners is None or ids is None:
+            continue
+        if len(corners) < 6 or len(ids) < 6:
+            continue
+        if len(corners) != len(ids):
+            continue
+        try:
+            retval, rvec, tvec = aruco.estimatePoseCharucoBoard(
+                corners, ids, board, camera_matrix, dist_coeffs, None, None
+            )
+        except Exception:
+            continue
+        if not retval:
+            continue
+        ids_flat = ids.flatten()
+        obj_pts = board_corners[ids_flat].astype(np.float32)
+        img_pts = corners.reshape(-1, 2).astype(np.float32)
+        proj, _ = cv2.projectPoints(obj_pts, rvec, tvec, camera_matrix, dist_coeffs)
+        proj = proj.reshape(-1, 2)
+        diff = img_pts - proj
+        for dx, dy in diff:
+            samples.append((float(dx), float(dy)))
+    if RESIDUAL_SCATTER_MAX_SAMPLES > 0 and len(samples) > RESIDUAL_SCATTER_MAX_SAMPLES:
+        rng = random.Random(HOLDOUT_SEED)
+        samples = rng.sample(samples, RESIDUAL_SCATTER_MAX_SAMPLES)
+    return samples
 
 
 def _coverage_gain(counts, poly):
@@ -779,6 +851,21 @@ def _calibration_worker(aruco, board, requests: Queue, results: Queue):
                 if errors:
                     holdout_error = sum(errors) / len(errors)
                     holdout_used = len(errors)
+            residual_samples = []
+            for corners, ids, rvec, tvec in zip(train_corners, train_ids, rvecs, tvecs):
+                ids_flat = ids.flatten()
+                obj_pts = board_corners[ids_flat].astype(np.float32)
+                img_pts = corners.reshape(-1, 2).astype(np.float32)
+                proj, _ = cv2.projectPoints(
+                    obj_pts, rvec, tvec, camera_matrix, dist_coeffs
+                )
+                proj = proj.reshape(-1, 2)
+                diff = img_pts - proj
+                for dx, dy in diff:
+                    residual_samples.append((float(dx), float(dy)))
+            if RESIDUAL_SCATTER_MAX_SAMPLES > 0 and len(residual_samples) > RESIDUAL_SCATTER_MAX_SAMPLES:
+                rng = random.Random(HOLDOUT_SEED)
+                residual_samples = rng.sample(residual_samples, RESIDUAL_SCATTER_MAX_SAMPLES)
             result = (
                 float(ret),
                 camera_matrix,
@@ -788,6 +875,7 @@ def _calibration_worker(aruco, board, requests: Queue, results: Queue):
                 image_size,
                 holdout_error,
                 holdout_used,
+                residual_samples,
             )
         except cv2.error as exc:
             if result is None:
@@ -862,6 +950,7 @@ def main() -> int:
     last_frames_used = None
     last_holdout_error = None
     last_holdout_used = None
+    last_residual_samples = []
     coverage_counts = np.zeros((HEATMAP_H, HEATMAP_W), dtype=np.int32)
     pose_counts = {}
     calib_pending = False
@@ -973,6 +1062,8 @@ def main() -> int:
             cv2.namedWindow("coverage", cv2.WINDOW_NORMAL)
         if SHOW_UNDISTORTED:
             cv2.namedWindow("undistorted", cv2.WINDOW_NORMAL)
+        if SHOW_RESIDUAL_SCATTER:
+            cv2.namedWindow("residuals", cv2.WINDOW_NORMAL)
 
         while True:
             frame = dev.read(timeout_ms=TIMEOUT_MS)
@@ -1111,6 +1202,7 @@ def main() -> int:
                     last_reproj_label = "Reproj"
                     last_holdout_error = None
                     last_holdout_used = None
+                    last_residual_samples = []
                     message = result.get("message", "unknown error")
                     print(f"Calibration failed (cv2.error): {message}")
                 else:
@@ -1123,6 +1215,7 @@ def main() -> int:
                         last_image_size,
                         last_holdout_error,
                         last_holdout_used,
+                        last_residual_samples,
                     ) = result
                     calib_pending = False
                     last_reproj_label = "Reproj"
@@ -1215,6 +1308,20 @@ def main() -> int:
                     ]
                     heatmap = _rebuild_heatmap(all_cells)
                     last_frames_used = len(all_corners)
+                if SHOW_RESIDUAL_SCATTER and last_camera_matrix is not None and last_dist_coeffs is not None:
+                    residual_samples = _compute_residual_samples(
+                        aruco,
+                        cv2,
+                        board,
+                        all_corners,
+                        all_ids,
+                        last_camera_matrix,
+                        last_dist_coeffs,
+                    )
+                    if residual_samples:
+                        last_residual_samples = residual_samples
+                else:
+                    last_residual_samples = []
                 if (
                     SHOW_UNDISTORTED
                     and last_camera_matrix is not None
@@ -1330,6 +1437,22 @@ def main() -> int:
                         cv2.LINE_AA,
                     )
                 cv2.imshow("undistorted", undistorted)
+            if SHOW_RESIDUAL_SCATTER:
+                if len(last_residual_samples) >= RESIDUAL_SCATTER_MIN_SAMPLES:
+                    scatter_img = _draw_residual_scatter(last_residual_samples)
+                else:
+                    scatter_img = _draw_residual_scatter([])
+                    cv2.putText(
+                        scatter_img,
+                        "No residuals",
+                        (12, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (200, 200, 200),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                cv2.imshow("residuals", scatter_img)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
